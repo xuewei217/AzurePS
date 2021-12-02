@@ -1,0 +1,65 @@
+Connect-AzAccount
+
+
+
+#this define a number of parallel  jobs, we can start from 200
+$number=200
+
+
+#replace the Sub IDs if needed, the array is the subs
+$SubArrays = @("f58eb632-8964-49b6-a86d-05a068214083")
+
+foreach ($Sub in $SubArrays)
+
+{
+Set-AzContext -Subscriptionid $Sub
+
+$VMs=Get-AzResource -ResourceType Microsoft.Compute/virtualMachines
+
+#This is the async function, input the NIC and VM info and it will output the count of the RouteTable entries. output is in "C:\temp\pslog.txt"
+$CountRT_Aync = {
+    param ($NICName,$ResourceGroupName,$VM_RID)
+    $EffRT=Get-AzEffectiveRouteTable -NetworkInterfaceName $NICName -ResourceGroupName $ResourceGroupName
+    $VM_RID |  Out-File -FilePath "C:\temp\pslog.txt" -Append
+    $EffRT.Count |  Out-File -FilePath "C:\temp\pslog.txt" -Append
+    
+  }
+
+#create an array
+$joblists=@()
+
+
+#enmu all VMs including stopped and running
+for($i=0; $i -lt $VMs.Count; $i++)
+    {
+    $VMINS=Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name 
+    $VM_State=(Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name -Status).Statuses[1].Code
+    $condition = ($VM_State -eq “PowerState/running”)
+    
+    #Query the running VMs
+    if ($condition)
+        { 
+        $VMs[$i].Name
+        $VMNIC=$VMINS.NetworkProfile.NetworkInterfaces.id
+        $NIC=Get-AzResource -ResourceId $VMNIC
+        # send the query in Async mode as get route table is time consuming
+        $joblists += Start-Job -ScriptBlock $CountRT_Aync -ArgumentList @($NIC.Name, $NIC.ResourceGroupName, $VMINS.Id)
+        $jobcounts=$joblists.Count
+        Write-Host "Jobcounts is " + $jobcounts
+        if (($jobcounts)%$number -eq 0)
+         {
+          sleep 30
+          write-host "sleeping 30 sec to avoid throttling"
+         }
+        }
+    }
+
+
+foreach ($job in $joblists)
+{
+Wait-Job -Name $job.Name
+}
+
+Write-Host "subscription " $Sub  " Jobs done"
+
+} 
