@@ -6,24 +6,36 @@ Connect-AzAccount
 $number=200
 
 
-#replace the Sub IDs if needed, the array is the subs
+#replace the Sub IDs if needed, the array is the VDI subs
+#$SubArrays = @("1447619c-831b-47d8-8d81-97e840595af0", "af8052e6-74a3-425a-aa98-37f61c505911", "e3c4b57c-3d59-41c0-b1d2-616daee0df16", "02dcfb22-0c06-4a19-8195-a7adb2a74e44", "7b743b14-e5ca-4a9c-b5c6-91b78dd92cab", "2050eea7-58d4-478a-9580-7eb3c6a7f3e7","bd953a42-131f-4226-bf37-118a2ccc6d43","a8de7b43-0854-404e-b991-0436644806e7","022cd259-4db2-4cc1-9a54-7440349f8b72" )
+
 $SubArrays = @("f58eb632-8964-49b6-a86d-05a068214083")
+
+#This is the async function, input the NIC and VM info and it will output the count of the RouteTable entries. output is in "C:\temp\pslog.txt"
+$CountRT_Aync = {
+    param ($NICname,$NICRG,$VM_RID,$VM_Name,$VM_RG)
+    $EffRT=Get-AzEffectiveRouteTable -NetworkInterfaceName $NICname -ResourceGroupName $NICRG
+    #if ($EffRT.Count -le 50)
+    #{
+    $VM_RID |  Out-File -FilePath "C:\temp\pslog.txt" -Append
+    $EffRT.count |  Out-File -FilePath "C:\temp\pslog.txt" -Append
+    "==========" |  Out-File -FilePath "C:\temp\pslog.txt" -Append
+    #Stop-AzVM -Name $VM_Name -ResourceGroupName $VM_RG -Force
+    #$VM_RID +" has been Stopped"|Out-File -FilePath "C:\temp\pslog.txt" -Append
+    #Start-AzVM -Name $VM_Name -ResourceGroupName $VM_RG 
+    #$VM_RID +" has been Started"|Out-File -FilePath "C:\temp\pslog.txt" -Append
+    }
+    #}
+
 
 foreach ($Sub in $SubArrays)
 
 {
 Set-AzContext -Subscriptionid $Sub
+$VMs=Get-AzVM -Status
 
-$VMs=Get-AzResource -ResourceType Microsoft.Compute/virtualMachines
 
-#This is the async function, input the NIC and VM info and it will output the count of the RouteTable entries. output is in "C:\temp\pslog.txt"
-$CountRT_Aync = {
-    param ($NICName,$ResourceGroupName,$VM_RID)
-    $EffRT=Get-AzEffectiveRouteTable -NetworkInterfaceName $NICName -ResourceGroupName $ResourceGroupName
-    $VM_RID |  Out-File -FilePath "C:\temp\pslog.txt" -Append
-    $EffRT.Count |  Out-File -FilePath "C:\temp\pslog.txt" -Append
-    
-  }
+ 
 
 #create an array
 $joblists=@()
@@ -32,26 +44,42 @@ $joblists=@()
 #enmu all VMs including stopped and running
 for($i=0; $i -lt $VMs.Count; $i++)
     {
-    $VMINS=Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name 
-    $VM_State=(Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name -Status).Statuses[1].Code
-    $condition = ($VM_State -eq “PowerState/running”)
+    $VM=$VMs[$i]
+    #$VMINS=Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name 
+    #$VM_State=(Get-AzVM -ResourceGroupName $VMs[$i].ResourceGroupName -Name $VMs[$i].Name -Status).Statuses[1].Code
+    Write-Host $VM.Name $VM.PowerState
+
+        #Query the running VMs
+
+    $condition = ($VM.PowerState -eq "VM running")
     
-    #Query the running VMs
+
+    
     if ($condition)
         { 
-        $VMs[$i].Name
-        $VMNIC=$VMINS.NetworkProfile.NetworkInterfaces.id
-        $NIC=Get-AzResource -ResourceId $VMNIC
-        # send the query in Async mode as get route table is time consuming
-        $joblists += Start-Job -ScriptBlock $CountRT_Aync -ArgumentList @($NIC.Name, $NIC.ResourceGroupName, $VMINS.Id)
+        Write-Host $VM.Name + ' checking route table'
+        $VMNIC=$VM.NetworkProfile.NetworkInterfaces.id
+
+
+        $NICname=$VMNIC -replace '^.*/subscriptions/([^/]+)/.*resourcegroups/([^/]+)/.*networkInterfaces/([^/]+)','$3' -split '/'
+        $NICRG= $VMNIC -replace '^.*/subscriptions/([^/]+)/.*resourcegroups/([^/]+)/.*networkInterfaces/([^/]+)','$2' -split '/'
+        
+        
+
+        $joblists += Start-Job -ScriptBlock $CountRT_Aync -ArgumentList @($NICname[0], $NICRG[0], $VM.Id, $VM.Name, $VM.ResourceGroupName)
         $jobcounts=$joblists.Count
-        Write-Host "Jobcounts is " + $jobcounts
-        if (($jobcounts)%$number -eq 0)
-         {
-          sleep 30
-          write-host "sleeping 30 sec to avoid throttling"
-         }
+        
+        Write-Host "Jobcounts is "  + $jobcounts
+
+            if (($jobcounts)%$number -eq 0)
+             {
+              sleep 30
+              write-host "sleeping 30 sec to avoid throttling"
+             }
         }
+    else {"skip Route table checking"}
+
+    "================="
     }
 
 
@@ -61,5 +89,4 @@ Wait-Job -Name $job.Name
 }
 
 Write-Host "subscription " $Sub  " Jobs done"
-
-} 
+}
